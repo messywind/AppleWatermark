@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>苹果水印生成器</title>
+  <script src="https://unpkg.com/exifr/dist/full.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/opencc-js@1.0.5/dist/umd/full.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      background: #111;
+      color: #eee;
+    }
+    .container {
+      max-width: 960px;
+      margin: 24px auto 40px;
+      padding: 0 16px;
+    }
+    h1 { margin-bottom: 4px; text-align: center; }
+    .tip {
+      font-size: 13px;
+      color: #aaa;
+      text-align: center;
+      margin-bottom: 16px;
+    }
+    
+    /* 工具栏样式 */
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      justify-content: center;
+      align-items: center;
+      background: #1a1a1a;
+      padding: 16px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+      border: 1px solid #333;
+    }
+    
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .upload-btn {
+      display: inline-block;
+      padding: 8px 16px;
+      border-radius: 999px;
+      background: #333;
+      border: 1px solid #555;
+      cursor: pointer;
+      user-select: none;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+    .upload-btn:hover { background: #444; border-color: #777; }
+
+    select {
+      background: #222;
+      border-radius: 6px;
+      border: 1px solid #555;
+      color: #eee;
+      padding: 6px 10px;
+      font-size: 13px;
+      outline: none;
+    }
+    
+    /* 滑动条样式 */
+    .slider-box {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+    }
+    .slider-box label {
+      font-size: 12px;
+      color: #888;
+    }
+    input[type=range] {
+      -webkit-appearance: none;
+      width: 100px;
+      height: 4px;
+      background: #444;
+      border-radius: 2px;
+      outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #0a84ff;
+      cursor: pointer;
+      border: 2px solid #1a1a1a;
+    }
+
+    .info-panel {
+      margin: 8px auto 16px;
+      font-size: 12px;
+      color: #ccc;
+      max-width: 760px;
+      white-space: pre-line;
+      text-align: center;
+      opacity: 0.8;
+    }
+    
+    .preview-wrapper {
+      text-align: center;
+      background: #000;
+      padding: 20px;
+      border-radius: 12px;
+      border: 1px solid #333;
+    }
+    canvas {
+      max-width: 100%;
+      height: auto;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    
+    .download-btn {
+      display: block;
+      margin: 20px auto 0;
+      padding: 12px 32px;
+      border-radius: 999px;
+      border: none;
+      background: #0a84ff;
+      color: #fff;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 500;
+      transition: background 0.2s;
+    }
+    .download-btn:disabled {
+      background: #444;
+      color: #888;
+      cursor: not-allowed;
+    }
+    .download-btn:hover:not(:disabled) {
+      background: #0071e3;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>苹果水印生成器</h1>
+    <div class="toolbar">
+      <label class="upload-btn">
+        📷 选择照片
+        <input id="fileInput" type="file" accept="image/*" hidden>
+      </label>
+
+      <div class="control-group">
+        <select id="themeSelect">
+          <option value="dark-bar">主题 1：暗色电影感 (黑条)</option>
+          <option value="white-frame">主题 2：极简画廊风 (白框)</option>
+        </select>
+      </div>
+
+      <div class="control-group" style="margin-left: 8px; border-left: 1px solid #444; padding-left: 16px;">
+        <div class="slider-box">
+          <label for="logoScale">Logo 大小</label>
+          <input type="range" id="logoScale" min="0.5" max="1.5" step="0.05" value="1">
+        </div>
+        <div class="slider-box">
+          <label for="textScale">文字大小</label>
+          <input type="range" id="textScale" min="0.5" max="1.5" step="0.05" value="1">
+        </div>
+      </div>
+    </div>
+
+    <div id="infoPanel" class="info-panel">等待上传照片...</div>
+
+    <div class="preview-wrapper">
+      <canvas id="canvas"></canvas>
+      <button id="downloadBtn" class="download-btn" disabled>下载</button>
+    </div>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const infoPanel = document.getElementById('infoPanel');
+    const themeSelect = document.getElementById('themeSelect');
+    const logoScaleInput = document.getElementById('logoScale');
+    const textScaleInput = document.getElementById('textScale');
+    const previewWrapper = document.querySelector('.preview-wrapper'); // 获取容器
+
+    const converter = OpenCC.Converter({ from: 't', to: 'cn' });
+
+    // 状态管理
+    let state = {
+      theme: 'dark-bar',
+      img: null,
+      text: '',
+      logoScale: 1.0,
+      textScale: 1.0
+    };
+    // 白色 logo（适用于黑条主题）
+    const WHITE_LOGO_SVG = "data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9Im5vIj8+CjxzdmcgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB3aWR0aD0iODQyLjMyMDA3IiBoZWlnaHQ9IjEwMDAuMDAwMSI+CiAgPHBhdGggZmlsbD0iI2ZmZiIgZD0iTTgyNC42NjYzNiA3NzkuMzAzNjNjLTE1LjEyMjk5IDM0LjkzNzI0LTMzLjAyMzY4IDY3LjA5Njc0LTUzLjc2MzggOTYuNjYzNzQtMjguMjcwNzYgNDAuMzA3NC01MS40MTgyIDY4LjIwNzgtNjkuMjU3MTcgODMuNzAxMi0yNy42NTM0NyAyNS40MzEzLTU3LjI4MjIgMzguNDU1Ni04OS4wMDk2NCAzOS4xOTYzLTIyLjc3NzA4IDAtNTAuMjQ1MzktNi40ODEzLTgyLjIxOTczLTE5LjYyOS0zMi4wNzkyNi0xMy4wODYxLTYxLjU1OTg1LTE5LjU2NzMtODguNTE1ODMtMTkuNTY3My0yOC4yNzA3NSAwLTU4LjU5MDgzIDYuNDgxMi05MS4wMjE5MyAxOS41NjczLTMyLjQ4MDUzIDEzLjE0NzctNTguNjQ2MzkgMTkuOTk5NC03OC42NTE5NiAyMC42Nzg0LTMwLjQyNTAxIDEuMjk2MjMtNjAuNzUxMjMtMTIuMDk4NS05MS4wMjE5My00MC4yNDU3LTE5LjMyMDM5LTE2Ljg1MTQtNDMuNDg2MzItNDUuNzM5NC03Mi40MzYwNy04Ni42NjQxLTMxLjA2MDc3OC00My43MDI0LTU2LjU5NzA0MS05NC4zNzk4My03Ni42MDI2MDktMTUyLjE1NTg2QzEwLjc0MDQxNiA2NTguNDQzMDkgMCA1OTguMDEyODMgMCA1MzkuNTA4NDVjMC02Ny4wMTY0OCAxNC40ODEwNDQtMTI0LjgxNzIgNDMuNDg2MzM2LTE3My4yNTQwMUM2Ni4yODE5NCAzMjcuMzQ4MjMgOTYuNjA4MTggMjk2LjY1NzggMTM0LjU2MzggMjc0LjEyNzZjMzcuOTU1NjYtMjIuNTMwMTYgNzguOTY2NzYtMzQuMDExMjkgMTIzLjEzMjEtMzQuNzQ1ODUgMjQuMTY1OTEgMCA1NS44NTYzMyA3LjQ3NTA4IDk1LjIzNzg0IDIyLjE2NiAzOS4yNzA0MiAxNC43NDAyOSA2NC40ODU3MSAyMi4yMTUzOCA3NS41NDA5MSAyMi4yMTUzOCA4LjI2NTE4IDAgMzYuMjc2NjgtOC43NDA1IDgzLjc2MjktMjYuMTY1ODcgNDQuOTA2MDctMTYuMTYwMDEgODIuODA2MTQtMjIuODUxMTggMTEzLjg1NDU4LTIwLjIxNTQ2IDg0LjEzMzI2IDYuNzg5OTIgMTQ3LjM0MTIyIDM5Ljk1NTU5IDE4OS4zNzY5OSA5OS43MDY4Ni03NS4yNDQ2MyA0NS41OTEyMi0xMTIuNDY1NzMgMTA5LjQ0NzMtMTExLjcyNTAyIDE5MS4zNjQ1Ni42Nzg5OSA2My44MDY3IDIzLjgyNjQzIDExNi45MDM4NCA2OS4zMTg4OCAxNTkuMDYzMDkgMjAuNjE2NjQgMTkuNTY3MjcgNDMuNjQwNjYgMzQuNjkwMjcgNjkuMjU3MSA0NS40MzA3LTUuNTU1MzEgMTYuMTEwNjItMTEuNDE5MzMgMzEuNTQyMjUtMTcuNjUzNzIgNDYuMzU2NjJ6TTYzMS43MDkyNiAyMC4wMDU3YzAgNTAuMDExNDEtMTguMjcxMDggOTYuNzA2OTMtNTQuNjg5NyAxMzkuOTI3ODItNDMuOTQ5MzIgNTEuMzgxMTgtOTcuMTA4MTcgODEuMDcxNjItMTU0Ljc1NDU5IDc2LjM4NjU5LS43MzQ1NC01Ljk5OTgzLTEuMTYwNDUtMTIuMzE0NDQtMS4xNjA0NS0xOC45NTAwMyAwLTQ4LjAxMDkxIDIwLjkwMDYtOTkuMzkyMDcgNTguMDE2NzgtMTQxLjQwMzE0IDE4LjUzMDI3LTIxLjI3MDk0IDQyLjA5NzQ2LTM4Ljk1NzQ0IDcwLjY3Njg1LTUzLjA2NjNDNTc4LjMxNTggOS4wMDIyOSA2MDUuMjkwMyAxLjMxNjIxIDYzMC42NTk4OCAwYy43NDA3NiA2LjY4NTc1IDEuMDQ5MzggMTMuMzcxOTEgMS4wNDkzOCAyMC4wMDUwNXoiLz4KPC9zdmc+";
+
+    // 黑色 logo（适用于白框主题）——你可以把这里替换成你提供的黑色版本
+    const BLACK_LOGO_SVG = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbDpzcGFjZT0icHJlc2VydmUiIHdpZHRoPSI4MTQiIGhlaWdodD0iMTAwMCI+CiAgPHBhdGggZD0iTTc4OC4xIDM0MC45Yy01LjggNC41LTEwOC4yIDYyLjItMTA4LjIgMTkwLjUgMCAxNDguNCAxMzAuMyAyMDAuOSAxMzQuMiAyMDIuMi0uNiAzLjItMjAuNyA3MS45LTY4LjcgMTQxLjktNDIuOCA2MS42LTg3LjUgMTIzLjEtMTU1LjUgMTIzLjFzLTg1LjUtMzkuNS0xNjQtMzkuNWMtNzYuNSAwLTEwMy43IDQwLjgtMTY1LjkgNDAuOHMtMTA1LjYtNTctMTU1LjUtMTI3QzQ2LjcgNzkwLjcgMCA2NjMgMCA1NDEuOGMwLTE5NC40IDEyNi40LTI5Ny41IDI1MC44LTI5Ny41IDY2LjEgMCAxMjEuMiA0My40IDE2Mi43IDQzLjQgMzkuNSAwIDEwMS4xLTQ2IDE3Ni4zLTQ2IDI4LjUgMCAxMzAuOSAyLjYgMTk4LjMgOTkuMnptLTIzNC0xODEuNWMzMS4xLTM2LjkgNTMuMS04OC4xIDUzLjEtMTM5LjMgMC03LjEtLjYtMTQuMy0xLjktMjAuMS01MC42IDEuOS0xMTAuOCAzMy43LTE0Ny4xIDc1LjgtMjguNSAzMi40LTU1LjEgODMuNi01NS4xIDEzNS41IDAgNy44IDEuMyAxNS42IDEuOSAxOC4xIDMuMi42IDguNCAxLjMgMTMuNiAxLjMgNDUuNCAwIDEwMi41LTMwLjQgMTM1LjUtNzEuM3oiLz4KPC9zdmc+"
+
+    // 事件监听
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      // 重置界面
+      resetPreview();
+
+      const img = await readImage(file);
+      let exif = {};
+      try {
+        exif = await exifr.parse(file) || {};
+      } catch (err) {
+        console.warn('EXIF 解析失败', err);
+      }
+
+      const meta = await buildMetadata(exif);
+      infoPanel.textContent = meta.debugText;
+
+      state.img = img;
+      state.text = meta.displayText;
+
+      render();
+      downloadBtn.disabled = false;
+      downloadBtn.textContent = '生成并下载图片'; // 重置按钮文字
+    });
+
+    themeSelect.addEventListener('change', (e) => {
+      state.theme = e.target.value;
+      if (state.img) {
+        resetPreview(); // 调整参数时切回 Canvas 预览，更流畅
+        render();
+      }
+    });
+
+    logoScaleInput.addEventListener('input', (e) => {
+      state.logoScale = parseFloat(e.target.value);
+      if (state.img) {
+        resetPreview();
+        render();
+      }
+    });
+
+    textScaleInput.addEventListener('input', (e) => {
+      state.textScale = parseFloat(e.target.value);
+      if (state.img) {
+        resetPreview();
+        render();
+      }
+    });
+
+    // 辅助函数：重置为 Canvas 预览模式（隐藏生成的 Image）
+    function resetPreview() {
+      canvas.style.display = 'block';
+      const existingImg = document.getElementById('resultImg');
+      if (existingImg) existingImg.remove();
+      downloadBtn.textContent = '下载成片';
+    }
+
+    // =========================================================
+    // 核心修改：下载按钮逻辑（兼容手机端）
+    // =========================================================
+    downloadBtn.addEventListener('click', () => {
+      if (!state.img) return;
+      
+      downloadBtn.disabled = true;
+      downloadBtn.textContent = '处理中...';
+
+      // 使用 toBlob 替代 toDataURL (解决大图内存崩溃问题)
+      canvas.toBlob(function(blob) {
+        if (!blob) {
+          alert('生成图片失败，可能是图片分辨率过高，请尝试使用小一点的图片。');
+          downloadBtn.disabled = false;
+          downloadBtn.textContent = '下载成片';
+          return;
+        }
+
+        const url = URL.createObjectURL(blob);
+
+        // 1. 尝试触发下载
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `watermark_${Date.now()}.jpg`;
+        // 尝试触发点击
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        // 2. 无论下载是否成功，都在页面上显示这一张图片
+        // 这样如果下载被微信拦截，用户可以直接“长按保存”
+        resetPreview(); // 先清理旧的
+        
+        const resultImg = new Image();
+        resultImg.id = 'resultImg';
+        resultImg.src = url;
+        resultImg.style.maxWidth = '100%';
+        resultImg.style.boxShadow = '0 4px 20px rgba(0,0,0,0.5)';
+        resultImg.style.display = 'block';
+        
+        // 隐藏 canvas，显示图片
+        canvas.style.display = 'none';
+        previewWrapper.insertBefore(resultImg, canvas);
+
+        // 更改按钮提示，告诉用户该怎么做
+        downloadBtn.textContent = '如未弹出下载，请长按上方图片保存';
+        downloadBtn.disabled = false;
+
+        // 3. 针对 iOS Safari 的特殊处理（有时需要在新标签页打开）
+        // 如果是 iOS，可能需要一点延迟提示
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+        if (isIOS) {
+           // iOS 用户习惯长按，已经生成了 Img 标签，他们现在可以长按了
+        }
+
+      }, 'image/jpeg', 0.92); // 0.92 质量，进一步减少体积
+    });
+
+    // 统一渲染入口
+    function render() {
+      if (state.theme === 'dark-bar') {
+        drawThemeDarkBar(state.img, state.text);
+      } else {
+        drawThemeWhiteFrame(state.img, state.text);
+      }
+    }
+
+    // 辅助函数
+    function readImage(file) {
+      return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = reject;
+          img.src = fr.result;
+        };
+        fr.onerror = reject;
+        fr.readAsDataURL(file);
+      });
+    }
+
+    // 元数据解析
+    async function buildMetadata(exif) {
+      const model = exif.Model || '';
+      let fNumberText = exif.FNumber ? 'f/' + toNumber(exif.FNumber).toFixed(1) : '';
+      const iso = exif.ISO || exif.PhotographicSensitivity || '';
+      let shutterText = '';
+      if (exif.ExposureTime) {
+        const t = toNumber(exif.ExposureTime);
+        if (t > 0) shutterText = t >= 1 ? t.toFixed(1) + 's' : '1/' + Math.round(1 / t) + 's';
+      }
+      let focalText = exif.FocalLength ? toNumber(exif.FocalLength).toFixed(0) + 'mm' : '';
+      let dateText = '';
+      if (exif.DateTimeOriginal) {
+        dateText = String(exif.DateTimeOriginal).split(' ')[0].replace(/:/g, '-');
+      }
+
+      let gpsText = '';
+      let locationName = '';
+      if (exif.GPSLatitude && exif.GPSLongitude) {
+        const lat = gpsToDecimal(exif.GPSLatitude, exif.GPSLatitudeRef);
+        const lng = gpsToDecimal(exif.GPSLongitude, exif.GPSLongitudeRef);
+        gpsText = lat.toFixed(4) + ', ' + lng.toFixed(4);
+        try {
+          locationName = await reverseGeocode(lat, lng);
+        } catch (e) { console.warn(e); }
+      }
+
+      const parts = [];
+      if (model) parts.push(model);
+      if (focalText) parts.push(focalText);
+      if (fNumberText) parts.push(fNumberText);
+      if (iso) parts.push('ISO ' + iso);
+      if (shutterText) parts.push(shutterText);
+      if (locationName || gpsText) parts.push(locationName || gpsText);
+      if (dateText) parts.push(dateText);
+
+      return {
+        displayText: parts.join(' · ') || 'Shot on iPhone',
+        debugText: `识别信息:\n${parts.join('\n')}`
+      };
+    }
+
+    function toNumber(v) {
+      if (typeof v === 'number') return v;
+      if (v && v.numerator && v.denominator) return v.numerator / v.denominator;
+      return Number(v) || 0;
+    }
+
+    function gpsToDecimal(arr, ref) {
+      const d = toNumber(arr[0]), m = toNumber(arr[1]), s = toNumber(arr[2]);
+      let res = d + m/60 + s/3600;
+      return (ref === 'S' || ref === 'W') ? -res : res;
+    }
+
+    async function reverseGeocode(lat, lng) {
+      const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=zh-CN`;
+      const res = await fetch(url);
+      if (!res.ok) return '';
+      const d = await res.json();
+      const region = d.principalSubdivision || '';
+      const city = d.city || d.locality || '';
+      return converter([region, city].filter(Boolean).join(' · '));
+    }
+
+    // 文本排版工具
+    function layoutTextLines(fullText, maxWidth, fontSize) {
+      if (!fullText) return [];
+      const rawTokens = fullText.split(' · ');
+      const lines = [];
+      let currentLine = '';
+
+      rawTokens.forEach((token, index) => {
+        const separator = index === 0 ? '' : '  |  '; 
+        const testLine = currentLine + separator + token;
+        const metrics = ctx.measureText(testLine);
+        
+        if (metrics.width > maxWidth && index > 0) {
+          lines.push(currentLine);
+          currentLine = token;
+        } else {
+          currentLine = testLine;
+        }
+      });
+      if (currentLine) lines.push(currentLine);
+
+      if (lines.length > 2) {
+        const first = lines[0];
+        let second = lines.slice(1).join('  |  ');
+        while (ctx.measureText(second + '...').width > maxWidth && second.length > 0) {
+          second = second.slice(0, -1);
+        }
+        return [first, second + '...'];
+      }
+      return lines;
+    }
+
+    // =========================================================
+    // THEME 1: 黑条 (保持不变)
+    // =========================================================
+    function drawThemeDarkBar(img, text) {
+      const imgW = img.naturalWidth;
+      const imgH = img.naturalHeight;
+
+      const logoImg = new Image();
+      logoImg.onload = () => {
+        canvas.width = imgW;
+        canvas.height = imgH;
+        // 1. 画原图
+        ctx.drawImage(img, 0, 0, imgW, imgH);
+
+        // 2. 基准尺寸计算
+        const baseRef = Math.max(24, imgW * 0.016); 
+        
+        // 应用用户缩放
+        const finalFontSize = baseRef * state.textScale;
+        // Logo 2.1倍
+        const finalLogoTargetH = (baseRef * 2.1) * state.logoScale;
+
+        // 字体设置
+        ctx.font = `500 ${finalFontSize}px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif`;
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+
+        const horizontalPadding = imgW * 0.04;
+        const maxTextWidth = imgW - horizontalPadding * 2;
+
+        const lines = layoutTextLines(text, maxTextWidth, finalFontSize);
+
+        // Logo 尺寸
+        const scale = finalLogoTargetH / logoImg.height;
+        const logoW = logoImg.width * scale;
+        const logoH = logoImg.height * scale;
+
+        // 布局参数 (跟随字体缩放)
+        const lineHeight = finalFontSize * 1.6;
+        const gapLogoText = finalFontSize * 0.8;
+        const paddingY = finalFontSize * 1.5;
+
+        // 内容总高
+        const contentHeight = logoH + gapLogoText + (lines.length * lineHeight) - (lineHeight - finalFontSize);
+        const barHeight = contentHeight + paddingY * 2;
+        const barTop = imgH - barHeight;
+
+        // 绘制黑条
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.75)'; 
+        ctx.fillRect(0, barTop, imgW, barHeight);
+
+        // 绘制 Logo
+        const centerY = barTop + barHeight / 2;
+        const startY = centerY - (contentHeight / 2);
+        
+        const logoX = (imgW - logoW) / 2;
+        ctx.drawImage(logoImg, logoX, startY, logoW, logoH);
+
+        // 绘制文字
+        ctx.fillStyle = '#f0f0f0';
+        let textCurY = startY + logoH + gapLogoText + (finalFontSize / 2);
+
+        lines.forEach((line) => {
+          const w = ctx.measureText(line).width;
+          const x = (imgW - w) / 2;
+          ctx.fillText(line, x, textCurY);
+          textCurY += lineHeight;
+        });
+      };
+      logoImg.src = WHITE_LOGO_SVG;
+    }
+
+    // =========================================================
+    // THEME 2: 白框 (保持不变)
+    // =========================================================
+    function drawThemeWhiteFrame(img, text) {
+      const imgW = img.naturalWidth;
+      const imgH = img.naturalHeight;
+      const minSide = Math.min(imgW, imgH);
+
+      const logoImg = new Image();
+      logoImg.onload = () => {
+        // 1. 基准尺寸
+        const borderSize = Math.floor(minSide * 0.04);
+        
+        // 原始底部留白基准 (15%)
+        let bottomPanelHeight = Math.floor(minSide * 0.15); 
+        
+        // 字体基准 (3.0%)
+        const baseRef = Math.max(24, Math.floor(minSide * 0.03));
+        
+        // 应用用户缩放
+        let finalFontSize = baseRef * state.textScale;
+        const finalLogoTargetH = (baseRef * 2.0) * state.logoScale; 
+
+        // 2. 预计算内容高度
+        ctx.font = `600 ${finalFontSize}px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif`;
+        const tempCanvasW = imgW + borderSize * 2;
+        const maxTextWidth = tempCanvasW * 0.82; 
+        
+        let lines = layoutTextLines(text, maxTextWidth, finalFontSize);
+        let maxLineWidth = 0;
+        lines.forEach(l => {
+           const w = ctx.measureText(l).width;
+           if(w > maxLineWidth) maxLineWidth = w;
+        });
+        if (maxLineWidth > maxTextWidth) {
+           const s = maxTextWidth / maxLineWidth;
+           finalFontSize = Math.floor(finalFontSize * s);
+        }
+
+        const scale = finalLogoTargetH / logoImg.height;
+        const logoH = logoImg.height * scale;
+        const logoW = logoImg.width * scale;
+
+        const lineHeight = finalFontSize * 1.5;
+        const gapLogoText = finalFontSize * 0.6;
+        const gapLines = finalFontSize * 0.2;
+
+        let totalContentH = logoH + gapLogoText + finalFontSize; 
+        if (lines.length > 1) {
+          totalContentH += (gapLines + finalFontSize * 0.85);
+        }
+
+        if (totalContentH + finalFontSize * 1.5 > bottomPanelHeight) {
+           bottomPanelHeight = totalContentH + finalFontSize * 1.5;
+        }
+
+        // 3. 建立真实画布
+        const canvasW = imgW + borderSize * 2;
+        const canvasH = imgH + borderSize + bottomPanelHeight;
+        canvas.width = canvasW;
+        canvas.height = canvasH;
+
+        // 4. 绘制
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvasW, canvasH);
+        ctx.drawImage(img, borderSize, borderSize, imgW, imgH);
+
+        const bottomCenterY = borderSize + imgH + (bottomPanelHeight / 2);
+        const startY = bottomCenterY - (totalContentH / 2);
+
+        const logoX = (canvasW - logoW) / 2;
+        ctx.drawImage(logoImg, logoX, startY, logoW, logoH);
+
+        ctx.textBaseline = 'top';
+        let currentY = startY + logoH + gapLogoText;
+
+        lines.forEach((line, idx) => {
+          let currentFontSize = finalFontSize;
+          if (idx === 1) currentFontSize = Math.floor(finalFontSize * 0.85);
+
+          const fontWeight = idx === 0 ? '600' : '400';
+          const color = idx === 0 ? '#222222' : '#777777';
+
+          ctx.font = `${fontWeight} ${currentFontSize}px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif`;
+          ctx.fillStyle = color;
+
+          const w = ctx.measureText(line).width;
+          const x = (canvasW - w) / 2;
+          ctx.fillText(line, x, currentY);
+
+          if (idx === 0) currentY += currentFontSize + gapLines;
+          else currentY += currentFontSize * 1.4;
+        });
+      };
+      logoImg.src = BLACK_LOGO_SVG;
+    }
+  </script>
+</body>
+</html>
